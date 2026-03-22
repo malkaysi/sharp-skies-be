@@ -1,1 +1,9 @@
-.venv
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# app cache only
+app/__pycache__/
