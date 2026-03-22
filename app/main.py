@@ -1,7 +1,8 @@
 from io import BytesIO
 
-from fastapi import FastAPI, File, UploadFile
-from PIL import Image
+import cv2
+from fastapi import FastAPI, File, Response, UploadFile
+from PIL import Image, ImageOps
 import numpy as np
 
 app = FastAPI()
@@ -18,15 +19,16 @@ async def upload_test(file: UploadFile = File(...)):
 
     # Open in Pillow to get image properties
     image = Image.open(BytesIO(data))
+    image = ImageOps.exif_transpose(image)
 
     # Convert to Numpy array to check dimensions
     image_array = np.array(image)
 
-    return {
-        "filename": file.filename,
-        "content_type": file.content_type,
-        "image_mode": image.mode,
-        "image_size": list(image.size),
-        "image_array_shape": list(image_array.shape),
-        "dtype": str(image_array.dtype),
-    }
+    # Apply Gaussian blur (your first "processing")
+    blurred = cv2.GaussianBlur(image_array, (0, 0), sigmaX=2)
+    success, buffer = cv2.imencode(".png", blurred)
+
+    if not success:
+        return {"error": "Failed to process image"}
+
+    return Response(content=buffer.tobytes(), media_type="image/png")
