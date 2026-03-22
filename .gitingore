@@ -6,4 +6,5 @@ __pycache__/
 *.py[cod]
 
 # app cache only
-app/__pycache__/
+app/__pycache__/*
+app/__pycache__/main.cpython-313.pyc
