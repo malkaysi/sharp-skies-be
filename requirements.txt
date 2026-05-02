@@ -10,6 +10,7 @@ opencv-python==4.13.0.92
 pillow==12.1.1
 pydantic==2.12.5
 pydantic_core==2.41.5
+python-dotenv==1.2.2
 python-multipart==0.0.22
 starlette==0.52.1
 typing-inspection==0.4.2
