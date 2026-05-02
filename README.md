@@ -1,5 +1,7 @@
 # sharp-skies
 
+Docs: http://127.0.0.1:8000/docs#/
+
 1. Create a new env first
    1. python3 -m venv .venv
 1. Activate the env in a new termina;
