@@ -42,7 +42,7 @@ async def enhance_image(
     return Response(content=output, media_type="image/png")
 
 
-DEFAULT_LAYERS = '[{"strength":1.0,"denoise":0.0},{"strength":1.0,"denoise":0.0},{"strength":1.0,"denoise":0.0},{"strength":1.0,"denoise":0.0},{"strength":1.0,"denoise":0.0},{"strength":1.0,"denoise":0.0}]'
+DEFAULT_LAYERS = '[{"strength":1.0,"denoise":0.0,"blend":1.0},{"strength":1.0,"denoise":0.0,"blend":1.0},{"strength":1.0,"denoise":0.0,"blend":1.0},{"strength":1.0,"denoise":0.0,"blend":1.0},{"strength":1.0,"denoise":0.0,"blend":1.0},{"strength":1.0,"denoise":0.0,"blend":1.0}]'
 
 
 @router.post("/enhance/wavelet")
@@ -62,6 +62,10 @@ async def enhance_image_wavelet(
         if not isinstance(layer, dict):
             raise HTTPException(
                 status_code=400, detail=f"layer {i + 1} must be an object"
+            )
+        if not 0 <= layer.get("blend", 1.0) <= 1:
+            raise HTTPException(
+                status_code=400, detail=f"layer {i + 1} blend must be between 0 and 1"
             )
         if layer.get("strength", 1.0) < 0:
             raise HTTPException(
