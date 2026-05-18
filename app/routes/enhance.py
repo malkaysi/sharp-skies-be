@@ -42,42 +42,40 @@ async def enhance_image(
     return Response(content=output, media_type="image/png")
 
 
+DEFAULT_LAYERS = '[{"strength":1.0,"denoise":0.0,"blend":1.0},{"strength":1.0,"denoise":0.0,"blend":1.0},{"strength":1.0,"denoise":0.0,"blend":1.0},{"strength":1.0,"denoise":0.0,"blend":1.0},{"strength":1.0,"denoise":0.0,"blend":1.0},{"strength":1.0,"denoise":0.0,"blend":1.0}]'
+
+
 @router.post("/enhance/wavelet")
 async def enhance_image_wavelet(
     file: UploadFile = File(...),
-    layer_strengths: str = Form("[1.0, 1.0, 1.0, 1.0, 1.0, 1.0]"),
-    denoise_threshold: float = Form(0.0),
+    layers: str = Form(DEFAULT_LAYERS),
 ):
-    # Parse the JSON array of layer strengths
     try:
-        strengths = json.loads(layer_strengths)
+        parsed = json.loads(layers)
     except (json.JSONDecodeError, TypeError):
-        raise HTTPException(
-            status_code=400, detail="layer_strengths must be a JSON array of numbers"
-        )
+        raise HTTPException(status_code=400, detail="layers must be a JSON array")
 
-    if not isinstance(strengths, list) or not all(
-        isinstance(s, (int, float)) for s in strengths
-    ):
-        raise HTTPException(
-            status_code=400, detail="layer_strengths must be an array of numbers"
-        )
-    if len(strengths) < 1 or len(strengths) > 8:
-        raise HTTPException(
-            status_code=400, detail="layer_strengths must have 1-8 layers"
-        )
-    if any(s < 0 for s in strengths):
-        raise HTTPException(status_code=400, detail="layer strengths must be >= 0")
-    if denoise_threshold < 0:
-        raise HTTPException(status_code=400, detail="denoise_threshold must be >= 0")
+    if not isinstance(parsed, list) or len(parsed) < 1 or len(parsed) > 8:
+        raise HTTPException(status_code=400, detail="layers must have 1-8 entries")
+
+    for i, layer in enumerate(parsed):
+        if not isinstance(layer, dict):
+            raise HTTPException(
+                status_code=400, detail=f"layer {i + 1} must be an object"
+            )
+        if not 0 <= layer.get("blend", 1.0) <= 1:
+            raise HTTPException(
+                status_code=400, detail=f"layer {i + 1} blend must be between 0 and 1"
+            )
+        if layer.get("strength", 1.0) < 0:
+            raise HTTPException(
+                status_code=400, detail=f"layer {i + 1} strength must be >= 0"
+            )
+        if layer.get("denoise", 0.0) < 0:
+            raise HTTPException(
+                status_code=400, detail=f"layer {i + 1} denoise must be >= 0"
+            )
 
     image_array = await decode_uploaded_image(file)
-
-    result = enhance_wavelets(
-        image_array=image_array,
-        layer_strengths=strengths,
-        denoise_threshold=denoise_threshold,
-    )
-
-    output = encode_png(result)
-    return Response(content=output, media_type="image/png")
+    result = enhance_wavelets(image_array=image_array, layers=parsed)
+    return Response(content=encode_png(result), media_type="image/png")
