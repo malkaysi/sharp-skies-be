@@ -19,15 +19,20 @@ def wavelet_reconstruct(layers: list[np.ndarray]) -> np.ndarray:
     return sum(layers)
 
 
+def soft_threshold(detail: np.ndarray, threshold: float) -> np.ndarray:
+    return np.sign(detail) * np.maximum(0.0, np.abs(detail) - threshold)
+
+
 def enhance_wavelets(
     image_array: np.ndarray,
     layers: list[dict],
 ) -> np.ndarray:
     """
     layers: list of dicts with keys:
-    - strength: float  (>1 sharpen, <1 soften, 1.0 unchanged)
-    - denoise: float   (zero out detail values below this, 0.0 = off)
-    - blend: float     (0.0 = original detail, 1.0 = fully processed, default 1.0)
+      - strength: float  (>1 sharpen, <1 soften, 1.0 unchanged)
+      - denoise: float   (soft threshold on detail, 0.0 = off)
+      - clip: float      (max detail amplitude after strength, 0.0 = off)
+      - blend: float     (0.0 = original detail, 1.0 = fully processed, default 1.0)
     """
 
     num_layers = len(layers)
@@ -40,14 +45,17 @@ def enhance_wavelets(
     for i in range(num_layers):
         strength = layers[i].get("strength", 1.0)
         denoise = layers[i].get("denoise", 0.0)
+        clip = layers[i].get("clip", 0.0)
         blend = layers[i].get("blend", 1.0)
 
         original_detail = detail_layers[i].copy()
 
         if denoise > 0:
-            detail_layers[i][np.abs(detail_layers[i]) < denoise] = 0
+            detail_layers[i] = soft_threshold(detail_layers[i], denoise)
 
         detail_layers[i] = detail_layers[i] * strength
+        if clip > 0:
+            detail_layers[i] = np.clip(detail_layers[i], -clip, clip)
         detail_layers[i] = original_detail * (1 - blend) + detail_layers[i] * blend
 
     result_l = wavelet_reconstruct(detail_layers)

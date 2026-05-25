@@ -42,7 +42,7 @@ async def enhance_image(
     return Response(content=output, media_type="image/png")
 
 
-DEFAULT_LAYERS = '[{"strength":1.0,"denoise":0.0,"blend":1.0},{"strength":1.0,"denoise":0.0,"blend":1.0},{"strength":1.0,"denoise":0.0,"blend":1.0},{"strength":1.0,"denoise":0.0,"blend":1.0},{"strength":1.0,"denoise":0.0,"blend":1.0},{"strength":1.0,"denoise":0.0,"blend":1.0}]'
+DEFAULT_LAYERS = '[{"strength":1.0,"denoise":0.0,"clip":0.0,"blend":1.0},{"strength":1.0,"denoise":0.0,"clip":0.0,"blend":1.0},{"strength":1.0,"denoise":0.0,"clip":0.0,"blend":1.0},{"strength":1.0,"denoise":0.0,"clip":0.0,"blend":1.0},{"strength":1.0,"denoise":0.0,"clip":0.0,"blend":1.0},{"strength":1.0,"denoise":0.0,"clip":0.0,"blend":1.0}]'
 
 
 @router.post("/enhance/wavelet")
@@ -74,6 +74,10 @@ async def enhance_image_wavelet(
         if layer.get("denoise", 0.0) < 0:
             raise HTTPException(
                 status_code=400, detail=f"layer {i + 1} denoise must be >= 0"
+            )
+        if layer.get("clip", 0.0) < 0:
+            raise HTTPException(
+                status_code=400, detail=f"layer {i + 1} clip must be >= 0"
             )
 
     image_array = await decode_uploaded_image(file)
