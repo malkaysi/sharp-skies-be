@@ -1,11 +1,12 @@
+from app.routes.enhance import router as enhance_router
+from app.routes.stack import router as stack_router
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
-
-from app.routes.enhance import router as enhance_router
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
 
 app = FastAPI()
@@ -26,3 +27,4 @@ def health_check():
 
 
 app.include_router(enhance_router, prefix="/api")
+app.include_router(stack_router, prefix="/api")
