@@ -1,6 +1,7 @@
 from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
 
 from app.services.image_io import encode_png
+from app.services.quality_service import rank_and_select, score_frame
 from app.services.video_reader_service import extract_frames
 
 
@@ -31,11 +32,8 @@ async def stack_video(
         )
 
     scores = [score_frame(f) for f in frames]
-    selected_frames, selected_scores = rank_and_select_frames(
-        frames, scores, top_percent
-    )
+    selected_frames, selected_scores = rank_and_select(frames, scores, top_percent)
     reference = selected_frames[0]
-    # Won't the reference potentially be bad if we're choosing the first frame?
     aligned_frames = align_frames(selected_frames, reference)
     result = stack_frames(aligned_frames, selected_scores)
 
