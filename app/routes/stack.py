@@ -1,5 +1,6 @@
 from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
 
+from app.services.alignment_service import align_frames
 from app.services.image_io import encode_png
 from app.services.quality_service import rank_and_select, score_frame
 from app.services.video_reader_service import extract_frames
