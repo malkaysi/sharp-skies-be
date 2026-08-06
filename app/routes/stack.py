@@ -1,4 +1,8 @@
-from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
+import base64
+import time
+
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
 
 from app.services.alignment_service import align_frames
 from app.services.image_io import encode_png
@@ -6,13 +10,12 @@ from app.services.quality_service import rank_and_select, score_frame
 from app.services.stack_service import stack_frames
 from app.services.video_reader_service import extract_frames
 
-
 router = APIRouter()
 
 
 @router.post("/stack")
 async def stack_video(
-    file: UploadFile = File(...),
+    file: UploadFile = File(...),  # noqa: B008
     top_percent: float = Form(0.0),
 ):
     if top_percent < 0.0 or top_percent > 100.0:
@@ -22,6 +25,8 @@ async def stack_video(
 
     data = await file.read()
     filename = file.filename or "uploaded_video"
+
+    t_start = time.time()
 
     try:
         frames = extract_frames(data, filename)
@@ -39,4 +44,15 @@ async def stack_video(
     aligned_frames = align_frames(selected_frames, reference)
     result = stack_frames(aligned_frames, selected_scores)
 
-    return Response(content=encode_png(result), media_type="image/png")
+    elapsed_ms = int((time.time() - t_start) * 1000)
+    image_b64 = base64.b64encode(encode_png(result)).decode("utf-8")
+
+    return JSONResponse(
+        {
+            "image": image_b64,
+            "frames_total": len(frames),
+            "frames_selected": len(selected_frames),
+            "top_percent": round(len(selected_frames) / len(frames) * 100, 1),
+            "elapsed_ms": elapsed_ms,
+        }
+    )
