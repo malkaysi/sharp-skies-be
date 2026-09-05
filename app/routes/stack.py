@@ -6,9 +6,12 @@ from fastapi.responses import JSONResponse
 
 from app.services.alignment_service import align_frames
 from app.services.image_io import encode_png
-from app.services.quality_service import rank_and_select, score_frame
+from app.services.quality_service import score_frame, select_indices
 from app.services.stack_service import stack_frames
-from app.services.video_reader_service import extract_frames
+from app.services.video_reader_service import (
+    extract_frames_by_index,
+    score_frames_streaming,
+)
 
 router = APIRouter()
 
@@ -29,20 +32,17 @@ async def stack_video(
     t_start = time.time()
 
     try:
-        frames = extract_frames(data, filename)
+        scores = score_frames_streaming(data, filename, score_frame)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    frames_total = len(frames)
-    if frames_total == 0:
-        raise HTTPException(
-            status_code=400, detail="No frames extracted from the video"
-        )
+    frames_total = len(scores)
 
-    scores = [score_frame(f) for f in frames]
-    selected_frames, selected_scores = rank_and_select(frames, scores, top_percent)
-    del frames, scores  # release unselected full-res frames before alignment
+    selected_indices = select_indices(scores, top_percent)
+    selected_scores = [scores[i] for i in selected_indices]
+    del scores
 
+    selected_frames = extract_frames_by_index(data, filename, selected_indices)
     reference = selected_frames[0]
     aligned_frames = align_frames(selected_frames, reference)
     result = stack_frames(aligned_frames, selected_scores)

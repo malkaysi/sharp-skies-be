@@ -12,23 +12,18 @@ def score_frame(frame: np.ndarray) -> float:
     return 0.6 * laplacian + 0.4 * tenengrad
 
 
-def rank_and_select(
-    frames: list[np.ndarray],
-    scores: list[float],
-    top_percent: float = 0.0,
-) -> tuple[list[np.ndarray], list[float]]:
-    paired = sorted(zip(scores, frames), key=lambda x: x[0], reverse=True)
-    sorted_scores = [p[0] for p in paired]
-    sorted_frames = [p[1] for p in paired]
-
-    n = len(sorted_frames)
+def select_indices(scores: list[float], top_percent: float = 0.0) -> list[int]:
+    """Returns the indices of the best-scoring frames, best-first."""
+    n = len(scores)
+    order = sorted(range(n), key=lambda i: scores[i], reverse=True)
 
     if top_percent > 0.0:
         k = max(1, int(round(n * top_percent / 100.0)))
     else:
+        sorted_scores = [scores[i] for i in order]
         k = _auto_select_count(sorted_scores)
 
-    return sorted_frames[:k], sorted_scores[:k]
+    return order[:k]
 
 
 def _auto_select_count(sorted_scores: list[float]) -> int:
