@@ -27,16 +27,22 @@ def _peak_rss_mb() -> float:
 
 
 @router.post("/stack")
-async def stack_video(
+def stack_video(
     file: UploadFile = File(...),  # noqa: B008
     top_percent: float = Form(0.0),
 ):
+    """Plain `def`, not `async def`: this does minutes of blocking CPU work
+    (OpenCV/NumPy), and none of it awaits anything. An async route would run
+    that on the single event loop thread, freezing the whole server —
+    including Render's health check ping — until it finished. FastAPI runs
+    sync routes in a worker thread instead, keeping the event loop free.
+    """
     if top_percent < 0.0 or top_percent > 100.0:
         raise HTTPException(
             status_code=400, detail="top_percent must be between 0 and 100"
         )
 
-    data = await file.read()
+    data = file.file.read()
     filename = file.filename or "uploaded_video"
 
     t_start = time.time()
