@@ -1,7 +1,7 @@
 import os
 import struct
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 import cv2
 import numpy as np
@@ -36,14 +36,34 @@ def score_frames_streaming(data: bytes, filename: str, score_fn: ScoreFn) -> lis
     return _score_video(data, score_fn, ext)
 
 
+def extract_frames_by_index_streaming(
+    data: bytes, filename: str, indices: list[int]
+) -> Iterator[tuple[int, np.ndarray]]:
+    """Yields (index, frame) pairs for `indices`, decoding one at a time.
+
+    Never buffers more than the current frame, regardless of how many
+    indices are requested — unlike `extract_frames_by_index`, which needs to
+    hold every requested frame in memory to hand back a list.
+    """
+    ext = os.path.splitext(filename)[1].lower()
+    if ext == ".ser":
+        yield from _extract_ser_by_index_streaming(data, indices)
+    else:
+        yield from _extract_video_by_index_streaming(data, indices, ext)
+
+
 def extract_frames_by_index(
     data: bytes, filename: str, indices: list[int]
 ) -> list[np.ndarray]:
-    """Decodes and returns only the frames at `indices`, in that same order."""
-    ext = os.path.splitext(filename)[1].lower()
-    if ext == ".ser":
-        return _extract_ser_by_index(data, indices)
-    return _extract_video_by_index(data, indices, ext)
+    """Decodes and returns only the frames at `indices`, in that same order.
+
+    Only use this for a small number of indices (e.g. a single reference
+    frame) — for the full selected set, consume
+    `extract_frames_by_index_streaming` instead so frames aren't all held
+    in memory at once.
+    """
+    frames_by_index = dict(extract_frames_by_index_streaming(data, filename, indices))
+    return [frames_by_index[i] for i in indices if i in frames_by_index]
 
 
 def _score_video(data: bytes, score_fn: ScoreFn, ext: str) -> list[float]:
@@ -66,14 +86,13 @@ def _score_video(data: bytes, score_fn: ScoreFn, ext: str) -> list[float]:
     return scores
 
 
-def _extract_video_by_index(
+def _extract_video_by_index_streaming(
     data: bytes, indices: list[int], ext: str
-) -> list[np.ndarray]:
+) -> Iterator[tuple[int, np.ndarray]]:
     wanted = set(indices)
     with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as f:
         f.write(data)
         tmp_path = f.name
-    frames_by_index: dict[int, np.ndarray] = {}
     try:
         cap = cv2.VideoCapture(tmp_path)
         idx = 0
@@ -82,7 +101,7 @@ def _extract_video_by_index(
                 ret, frame = cap.read()
                 if not ret:
                     break
-                frames_by_index[idx] = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                yield idx, cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 wanted.discard(idx)
             else:
                 ret = cap.grab()
@@ -92,7 +111,6 @@ def _extract_video_by_index(
         cap.release()
     finally:
         os.unlink(tmp_path)
-    return [frames_by_index[i] for i in indices if i in frames_by_index]
 
 
 def _parse_ser_header(data: bytes) -> dict:
@@ -164,11 +182,11 @@ def _score_ser(data: bytes, score_fn: ScoreFn) -> list[float]:
     return scores
 
 
-def _extract_ser_by_index(data: bytes, indices: list[int]) -> list[np.ndarray]:
+def _extract_ser_by_index_streaming(
+    data: bytes, indices: list[int]
+) -> Iterator[tuple[int, np.ndarray]]:
     meta = _parse_ser_header(data)
-    frames = []
-    for i in indices:
+    for i in sorted(indices):
         frame = _decode_ser_frame(data, meta, i)
         if frame is not None:
-            frames.append(frame)
-    return frames
+            yield i, frame

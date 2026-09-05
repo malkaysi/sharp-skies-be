@@ -13,6 +13,7 @@ from app.services.quality_service import score_frame, select_indices
 from app.services.stack_service import stack_frames
 from app.services.video_reader_service import (
     extract_frames_by_index,
+    extract_frames_by_index_streaming,
     score_frames_streaming,
 )
 
@@ -64,26 +65,31 @@ def stack_video(
     )
 
     selected_indices = select_indices(scores, top_percent)
-    selected_scores = [scores[i] for i in selected_indices]
+    scores_by_index = {i: scores[i] for i in selected_indices}
     del scores
 
-    selected_frames = extract_frames_by_index(data, filename, selected_indices)
-    frame_h, frame_w = selected_frames[0].shape[:2]
-    est_selected_mb = len(selected_frames) * frame_h * frame_w * 3 / 1e6
+    # Only the reference frame is decoded up front (it must exist before any
+    # other frame can be aligned to it) — everything else streams through
+    # align_frames -> stack_frames one at a time, so peak memory here is
+    # ~2 full-res frames + the running accumulator, not frames_selected of them.
+    reference_index = selected_indices[0]
+    reference = extract_frames_by_index(data, filename, [reference_index])[0]
+    frame_h, frame_w = reference.shape[:2]
+    est_unstreamed_mb = len(selected_indices) * frame_h * frame_w * 3 / 1e6
     logger.info(
-        "extracted %d/%d selected frames, resolution=%dx%d, "
-        "est_selected_size=%.0fMB | peak_rss=%.0fMB",
-        len(selected_frames),
+        "selected %d/%d frames, resolution=%dx%d, "
+        "would-be-buffered-size=%.0fMB | peak_rss=%.0fMB",
+        len(selected_indices),
         frames_total,
         frame_w,
         frame_h,
-        est_selected_mb,
+        est_unstreamed_mb,
         _peak_rss_mb(),
     )
 
-    reference = selected_frames[0]
-    aligned_frames = align_frames(selected_frames, reference)
-    result = stack_frames(aligned_frames, selected_scores)
+    frame_stream = extract_frames_by_index_streaming(data, filename, selected_indices)
+    aligned_stream = align_frames(frame_stream, reference)
+    result = stack_frames(aligned_stream, scores_by_index)
     logger.info("aligned + stacked | peak_rss=%.0fMB", _peak_rss_mb())
 
     elapsed_ms = int((time.time() - t_start) * 1000)
@@ -96,8 +102,8 @@ def stack_video(
         {
             "image": image_b64,
             "frames_total": frames_total,
-            "frames_selected": len(selected_frames),
-            "top_percent": round(len(selected_frames) / frames_total * 100, 1),
+            "frames_selected": len(selected_indices),
+            "top_percent": round(len(selected_indices) / frames_total * 100, 1),
             "elapsed_ms": elapsed_ms,
         }
     )
