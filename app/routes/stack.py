@@ -33,13 +33,16 @@ async def stack_video(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    if len(frames) == 0:
+    frames_total = len(frames)
+    if frames_total == 0:
         raise HTTPException(
             status_code=400, detail="No frames extracted from the video"
         )
 
     scores = [score_frame(f) for f in frames]
     selected_frames, selected_scores = rank_and_select(frames, scores, top_percent)
+    del frames, scores  # release unselected full-res frames before alignment
+
     reference = selected_frames[0]
     aligned_frames = align_frames(selected_frames, reference)
     result = stack_frames(aligned_frames, selected_scores)
@@ -50,9 +53,9 @@ async def stack_video(
     return JSONResponse(
         {
             "image": image_b64,
-            "frames_total": len(frames),
+            "frames_total": frames_total,
             "frames_selected": len(selected_frames),
-            "top_percent": round(len(selected_frames) / len(frames) * 100, 1),
+            "top_percent": round(len(selected_frames) / frames_total * 100, 1),
             "elapsed_ms": elapsed_ms,
         }
     )
