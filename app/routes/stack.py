@@ -2,6 +2,7 @@ import base64
 import logging
 import resource
 import sys
+import threading
 import time
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -19,6 +20,15 @@ from app.services.video_reader_service import (
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+# `stack_video` runs in a worker thread (see docstring below), so two
+# requests can now genuinely run their CV2 pipelines at the same time in this
+# process — something that was never possible before. OpenCV/FFmpeg aren't
+# guaranteed safe under that kind of concurrent access and can crash natively
+# (segfault) rather than raise a catchable exception. This process only has
+# one CPU to give either request anyway, so there's no throughput cost to
+# strictly serializing the CV2-heavy work.
+_cv2_pipeline_lock = threading.Lock()
 
 
 def _peak_rss_mb() -> float:
@@ -43,54 +53,64 @@ def stack_video(
             status_code=400, detail="top_percent must be between 0 and 100"
         )
 
-    data = file.file.read()
     filename = file.filename or "uploaded_video"
-
-    t_start = time.time()
     logger.info(
-        "stack request: file=%s size=%.1fMB | peak_rss=%.0fMB",
-        filename,
-        len(data) / 1e6,
-        _peak_rss_mb(),
+        "stack request received: file=%s | peak_rss=%.0fMB", filename, _peak_rss_mb()
     )
 
-    try:
-        scores = score_frames_streaming(data, filename, score_frame)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    with _cv2_pipeline_lock:
+        # Read the upload only once it's this request's turn — a request
+        # queued behind another shouldn't hold its full raw video in memory
+        # while it waits, on top of whatever the active request is using.
+        data = file.file.read()
+        t_start = time.time()
+        logger.info(
+            "stack request: file=%s size=%.1fMB | peak_rss=%.0fMB",
+            filename,
+            len(data) / 1e6,
+            _peak_rss_mb(),
+        )
 
-    frames_total = len(scores)
-    logger.info(
-        "scored %d frames | peak_rss=%.0fMB", frames_total, _peak_rss_mb()
-    )
+        try:
+            scores = score_frames_streaming(data, filename, score_frame)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
-    selected_indices = select_indices(scores, top_percent)
-    scores_by_index = {i: scores[i] for i in selected_indices}
-    del scores
+        frames_total = len(scores)
+        logger.info(
+            "scored %d frames | peak_rss=%.0fMB", frames_total, _peak_rss_mb()
+        )
 
-    # Only the reference frame is decoded up front (it must exist before any
-    # other frame can be aligned to it) — everything else streams through
-    # align_frames -> stack_frames one at a time, so peak memory here is
-    # ~2 full-res frames + the running accumulator, not frames_selected of them.
-    reference_index = selected_indices[0]
-    reference = extract_frames_by_index(data, filename, [reference_index])[0]
-    frame_h, frame_w = reference.shape[:2]
-    est_unstreamed_mb = len(selected_indices) * frame_h * frame_w * 3 / 1e6
-    logger.info(
-        "selected %d/%d frames, resolution=%dx%d, "
-        "would-be-buffered-size=%.0fMB | peak_rss=%.0fMB",
-        len(selected_indices),
-        frames_total,
-        frame_w,
-        frame_h,
-        est_unstreamed_mb,
-        _peak_rss_mb(),
-    )
+        selected_indices = select_indices(scores, top_percent)
+        scores_by_index = {i: scores[i] for i in selected_indices}
+        del scores
 
-    frame_stream = extract_frames_by_index_streaming(data, filename, selected_indices)
-    aligned_stream = align_frames(frame_stream, reference)
-    result = stack_frames(aligned_stream, scores_by_index)
-    logger.info("aligned + stacked | peak_rss=%.0fMB", _peak_rss_mb())
+        # Only the reference frame is decoded up front (it must exist before
+        # any other frame can be aligned to it) — everything else streams
+        # through align_frames -> stack_frames one at a time, so peak memory
+        # here is ~2 full-res frames + the running accumulator, not
+        # frames_selected of them.
+        reference_index = selected_indices[0]
+        reference = extract_frames_by_index(data, filename, [reference_index])[0]
+        frame_h, frame_w = reference.shape[:2]
+        est_unstreamed_mb = len(selected_indices) * frame_h * frame_w * 3 / 1e6
+        logger.info(
+            "selected %d/%d frames, resolution=%dx%d, "
+            "would-be-buffered-size=%.0fMB | peak_rss=%.0fMB",
+            len(selected_indices),
+            frames_total,
+            frame_w,
+            frame_h,
+            est_unstreamed_mb,
+            _peak_rss_mb(),
+        )
+
+        frame_stream = extract_frames_by_index_streaming(
+            data, filename, selected_indices
+        )
+        aligned_stream = align_frames(frame_stream, reference)
+        result = stack_frames(aligned_stream, scores_by_index)
+        logger.info("aligned + stacked | peak_rss=%.0fMB", _peak_rss_mb())
 
     elapsed_ms = int((time.time() - t_start) * 1000)
     image_b64 = base64.b64encode(encode_png(result)).decode("utf-8")
