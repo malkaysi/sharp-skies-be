@@ -4,3 +4,7 @@
 # Virtual environment
 .venv/
 .env
+
+# Local stack worker test files
+test-videos/
+test-output/

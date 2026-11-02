@@ -1,9 +1,10 @@
 from io import BytesIO
 
 from PIL import Image, ImageOps
-import cv2
 from fastapi import HTTPException, UploadFile
 import numpy as np
+
+from app.services.image_encode import encode_png  # noqa: F401 — re-exported for routes
 
 
 async def decode_uploaded_image(file: UploadFile) -> np.ndarray:
@@ -15,15 +16,3 @@ async def decode_uploaded_image(file: UploadFile) -> np.ndarray:
     image = ImageOps.exif_transpose(image)  # Handle EXIF orientation
     image = image.convert("RGB")  # Ensure consistent color mode
     return np.array(image)
-
-
-def encode_png(image_array: np.ndarray) -> bytes:
-    success, buffer = cv2.imencode(
-        ".png",
-        cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR),
-    )
-
-    if not success:
-        raise ValueError("Failed to encode image to PNG format")
-
-    return buffer.tobytes()

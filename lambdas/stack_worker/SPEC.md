@@ -4,6 +4,56 @@ Move the video-stacking pipeline out of the FastAPI `/api/stack` route and into
 an SQS-triggered container Lambda, so heavy jobs run in isolation and many
 users can stack videos at the same time.
 
+## Where we left off (2026-11-01)
+
+**Done:** M0 and M1. The real pipeline runs in the Lambda container locally
+(branch `lambda-m1`). `run_stack()` in `app/services/stack_pipeline.py` is
+shared by the Render route and the Lambda handler. Local results (Mac,
+`--memory=2g`):
+
+| Video | Frames (scored / selected) | Time | Peak RSS (fresh process) |
+|---|---|---|---|
+| `moon2.mp4` 22.4MB | 237 / 47 (matches Render) | 15.5s | 461MB |
+| `IMG_2036.MOV` 5.7MB HEVC | 316 / 63 | 21.5s | 543MB — can never fit Render's 512MB |
+
+Not yet verified: a local request to `/api/stack` through the refactored
+route (imports checked only).
+
+How to run it locally: see "Running the worker locally" below.
+
+**Next: M2 — AWS resources.** AWS CLI is installed and signed in
+(IAM user `Mustafa`, region `us-east-2`). M2 creates:
+
+- S3 bucket with `uploads/` and `results/` prefixes + lifecycle rule
+  (auto-delete after a few days)
+- DynamoDB table `stack_jobs` (PK `job_id`, TTL on `expires_at`, on-demand)
+- ECR repository `stack-worker` (image is arm64, ~1GB)
+- IAM role for the Lambda: S3 read `uploads/*`, write `results/*`; DynamoDB
+  update on `stack_jobs`; CloudWatch logs (SQS consume added in M4)
+- AWS Budgets alert at $10
+
+**Decision needed before starting M2:**
+- **Console or CLI?** Console teaches where everything lives; CLI commands are
+  faster and repeatable. (Longer term, see open question 1 on SAM/CDK.)
+- Also pick the retention period for the lifecycle rule / TTL (open
+  question 4).
+
+Nothing gets created in AWS without an explicit go-ahead.
+
+### Running the worker locally
+From the repo root, with Docker running and videos in `test-videos/`:
+
+```bash
+docker build -f lambdas/stack_worker/Dockerfile -t stack-worker .
+docker run --rm -p 9000:8080 --memory=2g -e AWS_LAMBDA_FUNCTION_TIMEOUT=900 -e OUTPUT_DIR=/output -v "$PWD/test-videos:/videos:ro" -v "$PWD/test-output:/output" stack-worker
+# second terminal:
+curl -XPOST "http://localhost:9000/2015-03-31/functions/function/invocations" -d '{"video_path": "/videos/moon2.mp4", "top_percent": 0}'
+```
+
+Start it from the terminal, not Docker Desktop's Run button (that skips the
+port, volumes and env). Restart between runs for clean `peak_rss` numbers —
+a warm container carries over its high-water mark, just like real Lambda.
+
 ## Problem
 
 `POST /api/stack` (`app/routes/stack.py`) runs 30s–2min of CPU/memory-heavy
@@ -104,7 +154,7 @@ Each milestone ends with something you can run and check.
 ### M0 — Hello-world container ✅
 Handler + Dockerfile run under the Lambda Runtime Interface Emulator locally.
 
-### M1 — Real pipeline, local file
+### M1 — Real pipeline, local file ✅
 - Docker build context = repo root; image copies `app/services/` and installs
   the pipeline deps (`numpy`, `opencv-python-headless`, `pillow`).
 - Extract the pipeline body of `stack_video` into a plain function, e.g.
@@ -163,9 +213,38 @@ poll until `done` → download PNG.
 
 **Done when:** two browsers stacking different videos at the same time both
 get correct results, the API stays responsive throughout, and an end-to-end
-baseline is recorded for the reference videos (see M7).
+baseline is recorded for the reference videos (see M8).
 
-### M7 — Faster pipeline (after cutover)
+### M7 — Separate worker repo
+After cutover the stack pipeline is only used by the Lambda, so it moves to
+its own repo (e.g. `sharp-skies-stack-worker`), fully separate from the Render
+API. Done after M6 so the pipeline never lives in two places while Render
+still runs it.
+
+- New repo containing: `handler.py`, the pipeline (`stack_pipeline.py`,
+  `video_reader_service.py`, `quality_service.py`, `alignment_service.py`,
+  `stack_service.py`, `image_encode.py`), `requirements.txt`, `Dockerfile`,
+  `.dockerignore`, README and this spec. Imports change from
+  `app.services.*` to the worker's own package.
+- Preserve history for the moved files (`git filter-repo` on a clone, or start
+  fresh and link back to this repo — either is fine).
+- Remove from `sharp-skies-be`: `lambdas/`, the stack pipeline modules in
+  `app/services/` (keep `image_encode.py` if `image_io` still uses it).
+- Worker repo gets its own deploy (script or GitHub Action: build → push to
+  ECR → update function) and its own secrets.
+- Infra ownership: the worker repo owns the Lambda, SQS, DLQ and ECR; S3 and
+  `stack_jobs` are shared — decide which repo defines them (see open
+  questions).
+
+The API ↔ worker contract (SQS message shape, `stack_jobs` fields, S3 key
+layout) lives in the worker repo's spec; the API repo links to it. Any
+contract change ships worker-first, in a backwards-compatible way, then API.
+
+**Done when:** `sharp-skies-be` has no stack pipeline or Lambda code, the
+worker repo builds and deploys on its own, and both reference videos still
+produce the same output end-to-end through the API.
+
+### M8 — Faster pipeline (after cutover)
 Done after the Lambda path is live, since finding the right speed/quality
 balance takes experimentation and shouldn't block the migration.
 
@@ -237,3 +316,5 @@ alignment and scoring *decisions*.
 4. **Retention:** how many days to keep uploads/results (lifecycle + TTL)?
 5. **Polling vs push:** polling is simplest for v1; WebSockets/SSE later if
    needed.
+6. **Shared infra after the repo split:** which repo defines the S3 bucket and
+   `stack_jobs` table, since both the API and the worker use them?

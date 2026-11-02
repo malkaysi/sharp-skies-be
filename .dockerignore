@@ -1,0 +1,6 @@
+.venv/
+.env
+.git/
+**/__pycache__/
+test-videos/
+test-output/
