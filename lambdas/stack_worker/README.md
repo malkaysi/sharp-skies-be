@@ -5,8 +5,8 @@ Runs the video-stacking pipeline (`app/services/video_reader_service.py`,
 `image_io.py`) as a container-image Lambda function, instead of inline in
 the FastAPI `/stack` route.
 
-Status: M1 and M2 done (pipeline runs in the container locally; AWS resources created). See SPEC.md, "Where we left off". Not deployed to Lambda
-created yet.
+Status: M1–M3 done (deployed to Lambda, invoked manually against both reference videos). See SPEC.md, "Where we left off". Not triggered by SQS
+yet.
 
 ## Why this exists
 
@@ -24,7 +24,7 @@ runs the same pipeline, writes the result back to S3.
       round-trip all work
 - [x] Handler that runs the actual pipeline against a local test file
 - [x] S3 bucket + IAM role (plus DynamoDB, ECR, budget — see SPEC.md)
-- [ ] Deployed to Lambda, manually invoked against a real test video
+- [x] Deployed to Lambda, manually invoked against a real test video
 - [ ] SQS wired in front of it
 - [ ] `/stack` route in `app/routes/stack.py` updated to enqueue instead of
       processing inline

@@ -4,7 +4,7 @@ Move the video-stacking pipeline out of the FastAPI `/api/stack` route and into
 an SQS-triggered container Lambda, so heavy jobs run in isolation and many
 users can stack videos at the same time.
 
-## Where we left off (2026-11-02)
+## Where we left off (2026-11-03)
 
 **Done:** M0 and M1. The real pipeline runs in the Lambda container locally
 (branch `lambda-m1`). `run_stack()` in `app/services/stack_pipeline.py` is
@@ -35,18 +35,35 @@ How to run it locally: see "Running the worker locally" below.
 Retention decided: 7 days (open question 4). SQS permissions get added to the
 role in M4; S3 CORS in M5.
 
-**Next: M3 — deployed, manually invoked.**
-- Handler: read `{job_id, top_percent}`, download `uploads/{job_id}.<ext>`
-  from S3 to `/tmp`, run `run_stack`, upload `results/{job_id}.png`, update
-  the `stack_jobs` row (`processing` → `done`/`failed`, stats, timestamps).
-  Needs `boto3` (already in the Lambda Python runtime, but pin it in
-  `requirements.txt` for parity).
-- Build the image (arm64), log Docker into ECR, tag and push.
-- Create the Lambda function from the image: architecture **arm64**, role
-  `stack-worker-role`, memory 2048MB, timeout 5 min, ephemeral storage 2GB.
-- Test: upload a reference video to `uploads/` by hand, put a job row in
-  `stack_jobs`, invoke from the console, check `results/` and the row. Record
-  the real Lambda duration and Max Memory Used for both reference videos.
+**Done: M3 — deployed, manually invoked** (2026-11-03). Handler reads
+`{job_id}`, pulls the video from S3, runs `run_stack`, writes the PNG to
+`results/` and updates the job row. Image `stack-worker:m3` pushed to ECR; function
+`stack-worker` created (arm64, 2048MB, 300s timeout, 2GB `/tmp`). Manual test
+runs on real Lambda:
+
+| Video | Frames | Duration (billed) | Scoring | Align + stack | Max Memory Used |
+|---|---|---|---|---|---|
+| `moon2.mp4` 22.4MB | 237 / 47 ✅ | 31.9s (vs 51s on Render) | 11.2s | 16.9s | 554MB |
+| `IMG_2036.MOV` 5.7MB HEVC | 316 / 63 ✅ | 43.7s (OOM on Render) | 19.8s | 21.9s | 554MB (warm container) |
+
+Both result PNGs match the local container output (moon2: pixel-identical;
+IMG_2036: same byte size). Job rows have status, stats, timestamps and
+`phase_ms` (moon2: download 245ms, stack 28.7s, upload 76ms).
+
+Cost at this size: 2GB × 31.9s ≈ 64 GB-s ≈ $0.00085/job on arm64 (~6,000
+jobs/month inside the free tier). Note `cv2.setNumThreads(1)` means the job
+uses ~1 vCPU, which Lambda reaches at ~1769MB — memory above that only adds
+headroom, not speed, until threading is re-enabled (M8).
+
+Follow-ups from M3:
+- Test rows `test-moon2` / `test-img2036` have no `expires_at`; delete them
+  by hand when no longer needed.
+
+**Next: M4 — SQS + DLQ.** Start by raising function memory to 4096MB (still
+2048MB). Then create the queue and dead-letter queue, add SQS
+permissions to `stack-worker-role`, add the event source mapping (batch size
+1), set reserved concurrency (5), and update the handler to read the SQS event
+shape. Then M4.5 (memory guard).
 
 Nothing gets created in AWS without an explicit go-ahead.
 
@@ -97,7 +114,7 @@ OpenCV work inside the web request on a single Render instance:
 Browser ──1. POST /api/jobs──────────────▶ API (Render)
         ◀── job_id + presigned upload URL ─┘   │ creates job row (status=pending_upload)
         ──2. PUT video ───────────────────▶ S3  uploads/{job_id}.mp4
-        ──3. POST /api/jobs/{id}/start ───▶ API ── sends {job_id, top_percent} ──▶ SQS
+        ──3. POST /api/jobs/{id}/start ───▶ API ── sends {job_id} ──────────────▶ SQS
                                                                                   │
                                          Lambda (stack_worker) ◀──────────────────┘
                                            - status=processing
@@ -117,7 +134,7 @@ passes through API memory.
 | Component | Choice | Notes |
 |---|---|---|
 | Worker | Lambda, container image (`public.ecr.aws/lambda/python:3.13`) | Container needed for OpenCV/numpy size |
-| Queue | SQS standard queue, batch size **1** | One video per invocation |
+| Queue | SQS standard queue, batch size **1** | One video per invocation; message body is `{"job_id": ...}` |
 | Dead-letter queue | SQS DLQ, `maxReceiveCount` = 2 | Poison videos stop retrying |
 | Storage | One S3 bucket, `uploads/` and `results/` prefixes | Lifecycle rule deletes both after N days |
 | Job status | DynamoDB table `stack_jobs`, PK `job_id` | On-demand billing |
@@ -136,7 +153,7 @@ passes through API memory.
 | `error` | string | Set when failed (user-safe message) |
 | `created_at`, `updated_at` | ISO string | |
 | `queued_at`, `started_at`, `finished_at` | ISO string | Stage timestamps for end-to-end timing |
-| `phase_ms` | map | Per-phase worker timings: `download`, `score`, `align_stack`, `upload` |
+| `phase_ms` | map | Per-phase worker timings: `download`, `stack`, `upload` (M3); `stack` splits into `score`/`align_stack` in M8 |
 | `expires_at` | epoch number | DynamoDB TTL |
 
 ### API contract (replaces `POST /api/stack`)
@@ -150,7 +167,8 @@ passes through API memory.
 
 ### Lambda configuration (starting values, tune with real videos)
 
-- Memory: 3008 MB (also buys more CPU); raise toward 10 GB if peak RSS needs it
+- Memory: 4096 MB (raised from 2048 after M3; observed peak ~554MB); raise
+  toward 10 GB if peak RSS needs it
 - Timeout: 5 min (pipeline is 30s–2min today); SQS visibility timeout ≥ 6× this
 - Ephemeral storage (`/tmp`): 2 GB
 - Reserved concurrency: 5 to start — caps cost and protects the account limit
@@ -193,6 +211,9 @@ see open questions).
 produces `results/{job_id}.png` and a `done` job row.
 
 ### M4 — SQS + DLQ
+- First: raise function memory from 2048MB to 4096MB —
+  `aws lambda update-function-configuration --function-name stack-worker --memory-size 4096 --region us-east-2`
+  — and record the 4GB timing on the first SQS-triggered test job.
 - Queue + DLQ, event source mapping with batch size 1.
 - Handler parses the SQS event shape; on unrecoverable errors (bad video)
   marks the job `failed` and returns success so it isn't retried; on
@@ -200,6 +221,29 @@ produces `results/{job_id}.png` and a `done` job row.
 
 **Done when:** sending a message to the queue processes a job end-to-end, and a
 corrupt video ends up `failed` (not retried forever).
+
+### M4.5 — Memory guard for warm containers
+Warm environments reuse the same Python process, so memory left over from one
+job carries into the next (seen on Render, and on Lambda: high-water mark rose
+448MB → 474MB across two warm runs). Keep a long-lived environment from
+creeping toward the limit.
+
+- Idempotency first: at the start of a job, if its row is already `done`,
+  return success without reprocessing. SQS delivers at-least-once anyway, and
+  the exit below relies on it.
+- After each job (result uploaded and row marked `done`), measure **current**
+  RSS (`/proc/self/statm`, not the `ru_maxrss` high-water mark).
+- Above **1GB**: first try to give memory back — `gc.collect()` then glibc
+  `malloc_trim(0)` via `ctypes` — and re-measure.
+- Still above 1GB: log it and `os._exit(0)` so Lambda discards the environment
+  and the next job gets a fresh one. That invocation reports an error, so SQS
+  redelivers the message; the retry sees `done` and returns immediately.
+- Log current RSS before/after each job so the creep is visible in CloudWatch.
+
+**Done when:** a test that forces RSS over 1GB (e.g. a temporary env var that
+lowers the threshold) recycles the environment, the job still ends `done`
+exactly once, the redelivered message is a no-op, and nothing lands in the
+DLQ.
 
 ### M5 — API job endpoints
 - Add `boto3`, the three `/api/jobs` endpoints, and AWS config via env vars
