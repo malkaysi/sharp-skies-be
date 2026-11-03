@@ -16,8 +16,8 @@ shared by the Render route and the Lambda handler. Local results (Mac,
 | `moon2.mp4` 22.4MB | 237 / 47 (matches Render) | 15.5s | 461MB |
 | `IMG_2036.MOV` 5.7MB HEVC | 316 / 63 | 21.5s | 543MB — can never fit Render's 512MB |
 
-Not yet verified: a local request to `/api/stack` through the refactored
-route (imports checked only).
+Also verified: a local request to `/api/stack` through the refactored route
+(frontend → uvicorn, `moon2.mp4`: 237/47 frames, 200 OK, same response shape).
 
 How to run it locally: see "Running the worker locally" below.
 
