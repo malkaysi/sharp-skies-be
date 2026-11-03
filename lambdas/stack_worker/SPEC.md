@@ -4,7 +4,7 @@ Move the video-stacking pipeline out of the FastAPI `/api/stack` route and into
 an SQS-triggered container Lambda, so heavy jobs run in isolation and many
 users can stack videos at the same time.
 
-## Where we left off (2026-11-01)
+## Where we left off (2026-11-02)
 
 **Done:** M0 and M1. The real pipeline runs in the Lambda container locally
 (branch `lambda-m1`). `run_stack()` in `app/services/stack_pipeline.py` is
@@ -21,22 +21,32 @@ Also verified: a local request to `/api/stack` through the refactored route
 
 How to run it locally: see "Running the worker locally" below.
 
-**Next: M2 — AWS resources.** AWS CLI is installed and signed in
-(IAM user `Mustafa`, region `us-east-2`). M2 creates:
+**Done: M2 — AWS resources** (2026-11-02, region `us-east-2`, account
+`277775957682`). Mix of CLI and console; all verified with the CLI.
 
-- S3 bucket with `uploads/` and `results/` prefixes + lifecycle rule
-  (auto-delete after a few days)
-- DynamoDB table `stack_jobs` (PK `job_id`, TTL on `expires_at`, on-demand)
-- ECR repository `stack-worker` (image is arm64, ~1GB)
-- IAM role for the Lambda: S3 read `uploads/*`, write `results/*`; DynamoDB
-  update on `stack_jobs`; CloudWatch logs (SQS consume added in M4)
-- AWS Budgets alert at $10
+| Resource | Details | Identifier |
+|---|---|---|
+| S3 bucket | Public access blocked, SSE-S3, lifecycle `expire-job-files` = 7 days | `sharp-skies-stack-277775957682` |
+| DynamoDB `stack_jobs` | PK `job_id` (String), on-demand, TTL on `expires_at` | `arn:aws:dynamodb:us-east-2:277775957682:table/stack_jobs` |
+| ECR `stack-worker` | Mutable tags, AES256 | `277775957682.dkr.ecr.us-east-2.amazonaws.com/stack-worker` |
+| IAM role `stack-worker-role` | Trusts `lambda.amazonaws.com`; `AWSLambdaBasicExecutionRole` + inline `stack-worker-access` (S3 GetObject `uploads/*`, PutObject `results/*`; DynamoDB GetItem/UpdateItem on `stack_jobs`) | `arn:aws:iam::277775957682:role/stack-worker-role` |
+| Budget alert | Monthly cost budget, $15 | `Monthly Budget` |
 
-**Decision needed before starting M2:**
-- **Console or CLI?** Console teaches where everything lives; CLI commands are
-  faster and repeatable. (Longer term, see open question 1 on SAM/CDK.)
-- Also pick the retention period for the lifecycle rule / TTL (open
-  question 4).
+Retention decided: 7 days (open question 4). SQS permissions get added to the
+role in M4; S3 CORS in M5.
+
+**Next: M3 — deployed, manually invoked.**
+- Handler: read `{job_id, top_percent}`, download `uploads/{job_id}.<ext>`
+  from S3 to `/tmp`, run `run_stack`, upload `results/{job_id}.png`, update
+  the `stack_jobs` row (`processing` → `done`/`failed`, stats, timestamps).
+  Needs `boto3` (already in the Lambda Python runtime, but pin it in
+  `requirements.txt` for parity).
+- Build the image (arm64), log Docker into ECR, tag and push.
+- Create the Lambda function from the image: architecture **arm64**, role
+  `stack-worker-role`, memory 2048MB, timeout 5 min, ephemeral storage 2GB.
+- Test: upload a reference video to `uploads/` by hand, put a job row in
+  `stack_jobs`, invoke from the console, check `results/` and the row. Record
+  the real Lambda duration and Max Memory Used for both reference videos.
 
 Nothing gets created in AWS without an explicit go-ahead.
 
